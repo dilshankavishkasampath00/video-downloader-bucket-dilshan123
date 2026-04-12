@@ -1,0 +1,15 @@
+{
+  "name": "video-downloader",
+  "version": "1.0.0",
+  "description": "Local Facebook/Instagram/TikTok video downloader",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ffmpeg-static": "^5.2.0",
+    "uuid": "^9.0.0"
+  }
+}
