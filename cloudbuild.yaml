@@ -1,0 +1,34 @@
+# Cloud Build configuration - deploying to Cloud Run
+steps:
+  # Step 1: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/video-downloader:latest'
+      - '.'
+
+  # Step 2: Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/video-downloader:latest'
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gke-deploy'
+    args:
+      - 'run'
+      - '--filename=.'
+      - '--image=gcr.io/$PROJECT_ID/video-downloader:latest'
+      - '--location=us-central1'
+      - '--filename=.'
+
+# Images to be pushed to Container Registry
+images:
+  - 'gcr.io/$PROJECT_ID/video-downloader:latest'
+
+# Build configuration
+options:
+  machineType: 'N1_HIGHCPU_8'
+
+timeout: '1800s'

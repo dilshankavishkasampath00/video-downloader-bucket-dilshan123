@@ -4,9 +4,16 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const ffmpegPath = require('ffmpeg-static');
+const AWS = require('aws-sdk');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+
+// AWS S3 Configuration (uses environment variables)
+const S3_BUCKET = process.env.S3_BUCKET || null;
+const s3 = new AWS.S3({
+  region: process.env.AWS_REGION || 'us-east-1'
+});
 
 // Downloads directory
 const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
@@ -14,6 +21,33 @@ if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true
 
 // In-memory job store
 const jobs = {};
+
+// ───────────────────────────────────────────────
+// S3 Upload Helper Function
+// ───────────────────────────────────────────────
+async function uploadToS3(filePath, fileName) {
+  if (!S3_BUCKET) {
+    console.log('[S3] Bucket not configured, skipping upload');
+    return null;
+  }
+
+  try {
+    const fileContent = fs.readFileSync(filePath);
+    const params = {
+      Bucket: S3_BUCKET,
+      Key: `downloads/${Date.now()}-${fileName}`,
+      Body: fileContent,
+      ContentType: 'video/mp4'
+    };
+
+    const data = await s3.upload(params).promise();
+    console.log(`[S3] File uploaded: ${data.Location}`);
+    return data.Location;
+  } catch (error) {
+    console.error('[S3] Upload failed:', error.message);
+    return null;
+  }
+}
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -138,11 +172,30 @@ app.post('/api/download', (req, res) => {
       // Find the output file
       const files = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.startsWith(jobId));
       if (files.length > 0) {
-        jobs[jobId].filename = files[0];
+        const fileName = files[0];
+        const filePath = path.join(DOWNLOADS_DIR, fileName);
+        jobs[jobId].filename = fileName;
         jobs[jobId].status = 'done';
         jobs[jobId].progress = 100;
-        jobs[jobId].downloadUrl = `/downloads/${files[0]}`;
-        console.log(`[${jobId}] Done: ${files[0]}`);
+        jobs[jobId].downloadUrl = `/downloads/${fileName}`;
+        
+        console.log(`[${jobId}] Done: ${fileName}`);
+
+        // Upload to S3 if configured
+        if (S3_BUCKET) {
+          uploadToS3(filePath, fileName)
+            .then(s3Url => {
+              if (s3Url) {
+                jobs[jobId].s3Url = s3Url;
+                jobs[jobId].downloadUrl = s3Url; // Prefer S3 URL for persistent access
+                console.log(`[${jobId}] S3 URL: ${s3Url}`);
+              }
+            })
+            .catch(err => {
+              console.error(`[${jobId}] S3 upload error:`, err);
+              // Fallback to local download still available
+            });
+        }
       } else {
         jobs[jobId].status = 'error';
         jobs[jobId].error = 'File not found after download.';
