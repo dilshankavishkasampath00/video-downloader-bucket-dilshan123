@@ -11,9 +11,7 @@ RUN apk add --no-cache \
 # Install and verify yt-dlp
 RUN pip3 install --upgrade pip && \
     pip3 install yt-dlp && \
-    ln -s /usr/local/bin/yt-dlp /usr/bin/yt-dlp && \
-    which yt-dlp && \
-    yt-dlp --version
+    python3 -m yt_dlp --version
 
 WORKDIR /app
 

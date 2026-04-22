@@ -9,6 +9,9 @@ const AWS = require('aws-sdk');
 
 // Find yt-dlp executable
 function findYtDlp() {
+  const isWindows = process.platform === 'win32';
+  const pythonCmd = isWindows ? 'python' : 'python3';
+  
   const commonPaths = [
     path.join(__dirname, '..', '.venv', 'Scripts', 'yt-dlp.exe'),
     path.join(__dirname, '..', '.venv', 'Scripts', 'yt-dlp'),
@@ -21,27 +24,27 @@ function findYtDlp() {
     try {
       execSync(`"${pathToCheck}" --version`, { stdio: 'ignore' });
       console.log(`[Init] Found yt-dlp at: ${pathToCheck}`);
-      return pathToCheck;
+      return { cmd: pathToCheck, useShell: false };
     } catch (e) {
       // Path not found, try next
     }
   }
   
-  // Try running as Python module
+  // Try running as Python module (preferred for Docker)
   try {
-    execSync('python -m yt_dlp --version', { stdio: 'ignore' });
-    console.log('[Init] Found yt-dlp via Python module: python -m yt_dlp');
-    return 'python -m yt_dlp';
+    execSync(`${pythonCmd} -m yt_dlp --version`, { stdio: 'ignore' });
+    console.log(`[Init] Found yt-dlp via Python module: ${pythonCmd} -m yt_dlp`);
+    return { cmd: pythonCmd, args: ['-m', 'yt_dlp'], useShell: false };
   } catch (e) {
     // Python module not available
   }
   
-  // If we get here, just return 'yt-dlp' and hope it's in PATH
-  console.warn('[Init] yt-dlp not found in common paths, using: yt-dlp');
-  return 'yt-dlp';
+  // Fallback: try with shell (allows PATH resolution)
+  console.warn('[Init] Using yt-dlp with shell mode for PATH resolution');
+  return { cmd: 'yt-dlp', useShell: true };
 }
 
-const YT_DLP_PATH = findYtDlp();
+const YT_DLP_CONFIG = findYtDlp();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -150,14 +153,25 @@ app.post('/api/info', (req, res) => {
 
   let output = '';
   let errOutput = '';
-  const proc = spawn(YT_DLP_PATH, args);
+  
+  // Prepare spawn arguments
+  let spawnArgs = args;
+  let spawnCmd = YT_DLP_CONFIG.cmd;
+  let spawnOpts = { shell: YT_DLP_CONFIG.useShell || false };
+  
+  // If using Python module, prepend -m yt_dlp to args
+  if (YT_DLP_CONFIG.args) {
+    spawnArgs = [...YT_DLP_CONFIG.args, ...args];
+  }
+  
+  const proc = spawn(spawnCmd, spawnArgs, spawnOpts);
 
   proc.stdout.on('data', d => { output += d.toString(); });
   proc.stderr.on('data', d => { errOutput += d.toString(); });
 
   proc.on('error', (err) => {
     console.error('[API/info] Process error:', err);
-    return res.status(500).json({ error: `Process error: ${err.message}. yt-dlp path: ${YT_DLP_PATH}` });
+    return res.status(500).json({ error: `Process error: ${err.message}. yt-dlp cmd: ${spawnCmd}, config: ${JSON.stringify(YT_DLP_CONFIG)}` });
   });
 
   proc.on('close', code => {
@@ -240,8 +254,19 @@ app.post('/api/download', (req, res) => {
     url
   ];
 
-  console.log(`[Job ${jobId}] Starting: yt-dlp ${args.join(' ')}`);
-  const proc = spawn('yt-dlp', args);
+  console.log(`[Job ${jobId}] Starting: ${YT_DLP_CONFIG.cmd} ${args.join(' ')}`);
+  
+  // Prepare spawn arguments
+  let downloadArgs = args;
+  let downloadCmd = YT_DLP_CONFIG.cmd;
+  let downloadOpts = { shell: YT_DLP_CONFIG.useShell || false };
+  
+  // If using Python module, prepend -m yt_dlp to args
+  if (YT_DLP_CONFIG.args) {
+    downloadArgs = [...YT_DLP_CONFIG.args, ...args];
+  }
+  
+  const proc = spawn(downloadCmd, downloadArgs, downloadOpts);
 
   proc.stdout.on('data', d => {
     const line = d.toString();
