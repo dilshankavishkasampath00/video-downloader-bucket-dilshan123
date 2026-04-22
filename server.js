@@ -19,6 +19,17 @@ console.log(`AWS Region: ${process.env.AWS_REGION || 'us-east-1'}`);
 console.log(`S3 Bucket: ${process.env.S3_BUCKET || 'Not configured'}`);
 console.log('='.repeat(60));
 
+// CORS Middleware
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // AWS S3 Configuration (uses environment variables)
 const S3_BUCKET = process.env.S3_BUCKET || null;
 const s3 = new AWS.S3({
@@ -64,11 +75,33 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/downloads', express.static(DOWNLOADS_DIR));
 
 // ───────────────────────────────────────────────
-// GET /api/info  – fetch video metadata + formats
+// Health Check Endpoint
+// ───────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    s3_configured: S3_BUCKET ? true : false,
+    s3_bucket: S3_BUCKET || 'not configured',
+    aws_region: process.env.AWS_REGION || 'us-east-1'
+  });
+});
+
+// ───────────────────────────────────────────────
+// Root endpoint
+// ───────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.send('Video Downloader API - Use /health to check status');
+});
+
+// ───────────────────────────────────────────────
+// POST /api/info  – fetch video metadata + formats
 // ───────────────────────────────────────────────
 app.post('/api/info', (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL is required' });
+
+  console.log(`[API/info] Fetching info for URL: ${url}`);
 
   const args = [
     '--dump-json',
@@ -85,11 +118,26 @@ app.post('/api/info', (req, res) => {
   proc.stdout.on('data', d => { output += d.toString(); });
   proc.stderr.on('data', d => { errOutput += d.toString(); });
 
+  proc.on('error', (err) => {
+    console.error('[API/info] Process error:', err);
+    return res.status(500).json({ error: `Process error: ${err.message}` });
+  });
+
   proc.on('close', code => {
+    console.log(`[API/info] Process exited with code: ${code}`);
+    
     if (code !== 0) {
-      console.error('yt-dlp info error:', errOutput);
-      return res.status(500).json({ error: 'Could not fetch video info. Make sure the URL is public and correct.' });
+      console.error('[API/info] yt-dlp error:', errOutput);
+      return res.status(500).json({ 
+        error: 'Could not fetch video info. Make sure the URL is public and correct.',
+        details: errOutput.substring(0, 200)
+      });
     }
+    
+    if (!output) {
+      return res.status(500).json({ error: 'No output from yt-dlp' });
+    }
+
     try {
       const info = JSON.parse(output);
 
@@ -122,7 +170,8 @@ app.post('/api/info', (req, res) => {
         formats: formats.slice(0, 8)
       });
     } catch (e) {
-      res.status(500).json({ error: 'Failed to parse video info.' });
+      console.error('[API/info] JSON parse error:', e.message);
+      return res.status(500).json({ error: 'Failed to parse video info.' });
     }
   });
 });
