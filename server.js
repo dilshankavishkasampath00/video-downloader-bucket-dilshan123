@@ -175,51 +175,73 @@ app.post('/api/info', (req, res) => {
 
   let output = '';
   let errOutput = '';
+  let responseSent = false;
   
-  const proc = spawnYtDlp(args);
-  
-  console.log(`[API/info] Spawned process - PID: ${proc.pid}, Type: ${YT_DLP_CONFIG.type}`);
-
-  proc.stdout.on('data', d => { 
-    output += d.toString();
-    console.log(`[API/info] stdout: ${d.toString().substring(0, 100)}`);
-  });
-  proc.stderr.on('data', d => { 
-    errOutput += d.toString();
-    console.log(`[API/info] stderr: ${d.toString().substring(0, 100)}`);
-  });
-
-  proc.on('error', (err) => {
-    console.error('[API/info] Process error:', err);
-    return res.status(500).json({ error: `Process error: ${err.message}. Config: ${JSON.stringify(YT_DLP_CONFIG)}` });
-  });
-
-  proc.on('close', code => {
-    console.log(`[API/info] Process exited with code: ${code}`);
-    console.log(`[API/info] Output length: ${output.length}, Error output length: ${errOutput.length}`);
+  try {
+    const proc = spawnYtDlp(args);
     
-    if (code !== 0) {
-      console.error('[API/info] yt-dlp error output:', errOutput);
-      return res.status(500).json({ 
-        error: 'Could not fetch video info. Make sure the URL is public and correct.',
-        details: errOutput.substring(0, 200)
-      });
-    }
-    
-    if (!output) {
-      console.error('[API/info] No output from yt-dlp! Config:', YT_DLP_CONFIG, 'Args:', args);
-      return res.status(500).json({ error: 'No output from yt-dlp. Check server logs.' });
-    }
+    console.log(`[API/info] Spawned process - PID: ${proc.pid}, Type: ${YT_DLP_CONFIG.type}`);
 
-    try {
-      const info = JSON.parse(output);
+    // Set timeout to kill process if it hangs
+    const timeout = setTimeout(() => {
+      if (!responseSent) {
+        responseSent = true;
+        console.error('[API/info] Process timeout - killing process');
+        proc.kill('SIGTERM');
+        res.status(500).json({ error: 'yt-dlp request timed out after 30 seconds' });
+      }
+    }, 30000);
 
-      // Build clean format list
-      const formats = [];
+    proc.stdout.on('data', d => { 
+      output += d.toString();
+      console.log(`[API/info] stdout: ${d.toString().substring(0, 100)}`);
+    });
+    proc.stderr.on('data', d => { 
+      errOutput += d.toString();
+      console.log(`[API/info] stderr: ${d.toString().substring(0, 100)}`);
+    });
 
-      // Best combined formats (video+audio already merged)
-      const combined = (info.formats || [])
-        .filter(f => f.vcodec !== 'none' && f.acodec !== 'none' && f.ext === 'mp4')
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      if (!responseSent) {
+        responseSent = true;
+        console.error('[API/info] Process error:', err);
+        res.status(500).json({ error: `Process error: ${err.message}. Config: ${JSON.stringify(YT_DLP_CONFIG)}` });
+      }
+    });
+
+    proc.on('close', code => {
+      clearTimeout(timeout);
+      if (responseSent) return; // Already sent response
+      
+      console.log(`[API/info] Process exited with code: ${code}`);
+      console.log(`[API/info] Output length: ${output.length}, Error output length: ${errOutput.length}`);
+      
+      if (code !== 0) {
+        responseSent = true;
+        console.error('[API/info] yt-dlp error output:', errOutput);
+        return res.status(500).json({ 
+          error: 'Could not fetch video info. Make sure the URL is public and correct.',
+          details: errOutput.substring(0, 200)
+        });
+      }
+      
+      if (!output) {
+        responseSent = true;
+        console.error('[API/info] No output from yt-dlp! Config:', YT_DLP_CONFIG, 'Args:', args);
+        return res.status(500).json({ error: 'No output from yt-dlp. Check server logs.' });
+      }
+
+      try {
+        responseSent = true;
+        const info = JSON.parse(output);
+
+        // Build clean format list
+        const formats = [];
+
+        // Best combined formats (video+audio already merged)
+        const combined = (info.formats || [])
+          .filter(f => f.vcodec !== 'none' && f.acodec !== 'none' && f.ext === 'mp4')
         .sort((a, b) => (b.height || 0) - (a.height || 0));
 
       const seen = new Set();
@@ -242,11 +264,21 @@ app.post('/api/info', (req, res) => {
         platform: info.extractor_key || '',
         formats: formats.slice(0, 8)
       });
-    } catch (e) {
-      console.error('[API/info] JSON parse error:', e.message);
-      return res.status(500).json({ error: 'Failed to parse video info.' });
+      } catch (e) {
+        if (!responseSent) {
+          responseSent = true;
+          console.error('[API/info] JSON parse error:', e.message);
+          res.status(500).json({ error: 'Failed to parse video info.' });
+        }
+      }
+    });
+  } catch (err) {
+    if (!responseSent) {
+      responseSent = true;
+      console.error('[API/info] Spawn error:', err);
+      res.status(500).json({ error: `Failed to spawn yt-dlp: ${err.message}` });
     }
-  });
+  }
 });
 
 // ───────────────────────────────────────────────
@@ -278,68 +310,103 @@ app.post('/api/download', (req, res) => {
 
   console.log(`[Job ${jobId}] Starting download with config:`, YT_DLP_CONFIG);
   
-  const proc = spawnYtDlp(args);
+  try {
+    const proc = spawnYtDlp(args);
+    
+    // Set timeout to kill process if it hangs (2 hours for large downloads)
+    const timeout = setTimeout(() => {
+      console.error(`[Job ${jobId}] Download timeout - killing process`);
+      proc.kill('SIGTERM');
+      if (jobs[jobId]) {
+        jobs[jobId].status = 'error';
+        jobs[jobId].error = 'Download timed out after 2 hours';
+      }
+    }, 7200000);
 
-  proc.stdout.on('data', d => {
-    const line = d.toString();
-    console.log(`[${jobId}]`, line.trim());
+    proc.stdout.on('data', d => {
+      const line = d.toString();
+      console.log(`[${jobId}]`, line.trim());
 
-    // Parse progress: [download]  45.2% of ...
-    const match = line.match(/\[download\]\s+([\d.]+)%/);
-    if (match) {
-      jobs[jobId].progress = parseFloat(match[1]);
-    }
-    // Parse destination filename
-    const destMatch = line.match(/\[(?:Merger|download)\] Destination: (.+)/);
-    if (destMatch) {
-      jobs[jobId].filename = path.basename(destMatch[1].trim());
-    }
-  });
+      // Parse progress: [download]  45.2% of ...
+      const match = line.match(/\[download\]\s+([\d.]+)%/);
+      if (match) {
+        jobs[jobId].progress = parseFloat(match[1]);
+      }
+      // Parse destination filename
+      const destMatch = line.match(/\[(?:Merger|download)\] Destination: (.+)/);
+      if (destMatch) {
+        jobs[jobId].filename = path.basename(destMatch[1].trim());
+      }
+    });
 
-  proc.stderr.on('data', d => {
-    console.error(`[${jobId}] ERR:`, d.toString().trim());
-  });
+    proc.stderr.on('data', d => {
+      console.error(`[${jobId}] ERR:`, d.toString().trim());
+    });
 
-  proc.on('close', code => {
-    if (code === 0) {
-      // Find the output file
-      const files = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.startsWith(jobId));
-      if (files.length > 0) {
-        const fileName = files[0];
-        const filePath = path.join(DOWNLOADS_DIR, fileName);
-        jobs[jobId].filename = fileName;
-        jobs[jobId].status = 'done';
-        jobs[jobId].progress = 100;
-        jobs[jobId].downloadUrl = `/downloads/${fileName}`;
-        
-        console.log(`[${jobId}] Done: ${fileName}`);
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      console.error(`[${jobId}] Process error:`, err);
+      if (jobs[jobId]) {
+        jobs[jobId].status = 'error';
+        jobs[jobId].error = `Process error: ${err.message}`;
+      }
+    });
 
-        // Upload to S3 if configured
-        if (S3_BUCKET) {
-          uploadToS3(filePath, fileName)
-            .then(s3Url => {
-              if (s3Url) {
-                jobs[jobId].s3Url = s3Url;
-                jobs[jobId].downloadUrl = s3Url; // Prefer S3 URL for persistent access
-                console.log(`[${jobId}] S3 URL: ${s3Url}`);
-              }
-            })
-            .catch(err => {
-              console.error(`[${jobId}] S3 upload error:`, err);
-              // Fallback to local download still available
-            });
+    proc.on('close', code => {
+      clearTimeout(timeout);
+      if (!jobs[jobId]) return; // Job was deleted
+      
+      if (code === 0) {
+        // Find the output file
+        try {
+          const files = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.startsWith(jobId));
+          if (files.length > 0) {
+            const fileName = files[0];
+            const filePath = path.join(DOWNLOADS_DIR, fileName);
+            jobs[jobId].filename = fileName;
+            jobs[jobId].status = 'done';
+            jobs[jobId].progress = 100;
+            jobs[jobId].downloadUrl = `/downloads/${fileName}`;
+            
+            console.log(`[${jobId}] Done: ${fileName}`);
+
+            // Upload to S3 if configured
+            if (S3_BUCKET) {
+              uploadToS3(filePath, fileName)
+                .then(s3Url => {
+                  if (s3Url && jobs[jobId]) {
+                    jobs[jobId].s3Url = s3Url;
+                    jobs[jobId].downloadUrl = s3Url; // Prefer S3 URL for persistent access
+                    console.log(`[${jobId}] S3 URL: ${s3Url}`);
+                  }
+                })
+                .catch(err => {
+                  console.error(`[${jobId}] S3 upload error:`, err);
+                  // Fallback to local download still available
+                });
+            }
+          } else {
+            jobs[jobId].status = 'error';
+            jobs[jobId].error = 'File not found after download.';
+          }
+        } catch (err) {
+          console.error(`[${jobId}] Error checking downloads:`, err);
+          jobs[jobId].status = 'error';
+          jobs[jobId].error = `Error after download: ${err.message}`;
         }
       } else {
         jobs[jobId].status = 'error';
-        jobs[jobId].error = 'File not found after download.';
+        jobs[jobId].error = 'Download failed. The video may be private or unavailable.';
       }
-    } else {
-      jobs[jobId].status = 'error';
-      jobs[jobId].error = 'Download failed. The video may be private or unavailable.';
-    }
-  });
+    });
 
-  res.json({ jobId });
+    res.json({ jobId });
+  } catch (err) {
+    console.error(`[Job ${jobId}] Failed to spawn download:`, err);
+    jobs[jobId].status = 'error';
+    jobs[jobId].error = `Failed to start download: ${err.message}`;
+    res.status(500).json({ jobId, error: err.message });
+  }
 });
 
 // ───────────────────────────────────────────────
