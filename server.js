@@ -9,6 +9,16 @@ const AWS = require('aws-sdk');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Log startup info
+console.log('='.repeat(60));
+console.log('🎬 Video Downloader Starting');
+console.log('='.repeat(60));
+console.log(`Port: ${PORT}`);
+console.log(`FFmpeg path: ${ffmpegPath}`);
+console.log(`AWS Region: ${process.env.AWS_REGION || 'us-east-1'}`);
+console.log(`S3 Bucket: ${process.env.S3_BUCKET || 'Not configured'}`);
+console.log('='.repeat(60));
+
 // AWS S3 Configuration (uses environment variables)
 const S3_BUCKET = process.env.S3_BUCKET || null;
 const s3 = new AWS.S3({
@@ -233,6 +243,25 @@ setInterval(() => {
   });
 }, 10 * 60 * 1000); // every 10 minutes
 
-app.listen(PORT, () => {
-  console.log(`\n🎬 Video Downloader running at http://localhost:${PORT}\n`);
+// Start server with error handling
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🎬 Video Downloader running at http://0.0.0.0:${PORT}\n`);
+  console.log('Ready to accept connections!\n');
+});
+
+// Handle errors
+server.on('error', (err) => {
+  console.error('Server error:', err);
+  process.exit(1);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  process.exit(1);
+});
+
+// Handle unhandled rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection at:', promise, 'reason:', reason);
 });
