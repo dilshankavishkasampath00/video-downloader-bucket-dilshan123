@@ -11,7 +11,9 @@ RUN apk add --no-cache \
 # Install and verify yt-dlp
 RUN pip3 install --upgrade pip && \
     pip3 install yt-dlp && \
-    python3 -m yt_dlp --version
+    echo "Testing yt-dlp installation..." && \
+    python3 -m yt_dlp --version && \
+    echo "yt-dlp installation verified!"
 
 WORKDIR /app
 
@@ -28,7 +30,7 @@ RUN mkdir -p downloads && chmod 777 downloads
 # Expose port
 EXPOSE 3000
 
-# Health check
+# Health check using local endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 

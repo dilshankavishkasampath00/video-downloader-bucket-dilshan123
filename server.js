@@ -177,9 +177,17 @@ app.post('/api/info', (req, res) => {
   let errOutput = '';
   
   const proc = spawnYtDlp(args);
+  
+  console.log(`[API/info] Spawned process - PID: ${proc.pid}, Type: ${YT_DLP_CONFIG.type}`);
 
-  proc.stdout.on('data', d => { output += d.toString(); });
-  proc.stderr.on('data', d => { errOutput += d.toString(); });
+  proc.stdout.on('data', d => { 
+    output += d.toString();
+    console.log(`[API/info] stdout: ${d.toString().substring(0, 100)}`);
+  });
+  proc.stderr.on('data', d => { 
+    errOutput += d.toString();
+    console.log(`[API/info] stderr: ${d.toString().substring(0, 100)}`);
+  });
 
   proc.on('error', (err) => {
     console.error('[API/info] Process error:', err);
@@ -188,9 +196,10 @@ app.post('/api/info', (req, res) => {
 
   proc.on('close', code => {
     console.log(`[API/info] Process exited with code: ${code}`);
+    console.log(`[API/info] Output length: ${output.length}, Error output length: ${errOutput.length}`);
     
     if (code !== 0) {
-      console.error('[API/info] yt-dlp error:', errOutput);
+      console.error('[API/info] yt-dlp error output:', errOutput);
       return res.status(500).json({ 
         error: 'Could not fetch video info. Make sure the URL is public and correct.',
         details: errOutput.substring(0, 200)
@@ -198,7 +207,8 @@ app.post('/api/info', (req, res) => {
     }
     
     if (!output) {
-      return res.status(500).json({ error: 'No output from yt-dlp' });
+      console.error('[API/info] No output from yt-dlp! Config:', YT_DLP_CONFIG, 'Args:', args);
+      return res.status(500).json({ error: 'No output from yt-dlp. Check server logs.' });
     }
 
     try {
