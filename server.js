@@ -24,7 +24,7 @@ function findYtDlp() {
     try {
       execSync(`"${pathToCheck}" --version`, { stdio: 'ignore' });
       console.log(`[Init] Found yt-dlp at: ${pathToCheck}`);
-      return { cmd: pathToCheck, useShell: false };
+      return { type: 'binary', cmd: pathToCheck };
     } catch (e) {
       // Path not found, try next
     }
@@ -34,17 +34,39 @@ function findYtDlp() {
   try {
     execSync(`${pythonCmd} -m yt_dlp --version`, { stdio: 'ignore' });
     console.log(`[Init] Found yt-dlp via Python module: ${pythonCmd} -m yt_dlp`);
-    return { cmd: pythonCmd, args: ['-m', 'yt_dlp'], useShell: false };
+    return { type: 'python', pythonCmd: pythonCmd };
   } catch (e) {
     // Python module not available
   }
   
   // Fallback: try with shell (allows PATH resolution)
   console.warn('[Init] Using yt-dlp with shell mode for PATH resolution');
-  return { cmd: 'yt-dlp', useShell: true };
+  return { type: 'shell', cmd: 'yt-dlp' };
 }
 
 const YT_DLP_CONFIG = findYtDlp();
+
+// Helper to spawn yt-dlp with proper configuration
+function spawnYtDlp(args) {
+  let cmd, spawnArgs, opts;
+  
+  if (YT_DLP_CONFIG.type === 'python') {
+    cmd = YT_DLP_CONFIG.pythonCmd;
+    spawnArgs = ['-m', 'yt_dlp', ...args];
+    opts = { shell: false };
+  } else if (YT_DLP_CONFIG.type === 'shell') {
+    cmd = 'yt-dlp';
+    spawnArgs = args;
+    opts = { shell: true };
+  } else {
+    // Binary
+    cmd = YT_DLP_CONFIG.cmd;
+    spawnArgs = args;
+    opts = { shell: false };
+  }
+  
+  return spawn(cmd, spawnArgs, opts);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -154,24 +176,14 @@ app.post('/api/info', (req, res) => {
   let output = '';
   let errOutput = '';
   
-  // Prepare spawn arguments
-  let spawnArgs = args;
-  let spawnCmd = YT_DLP_CONFIG.cmd;
-  let spawnOpts = { shell: YT_DLP_CONFIG.useShell || false };
-  
-  // If using Python module, prepend -m yt_dlp to args
-  if (YT_DLP_CONFIG.args) {
-    spawnArgs = [...YT_DLP_CONFIG.args, ...args];
-  }
-  
-  const proc = spawn(spawnCmd, spawnArgs, spawnOpts);
+  const proc = spawnYtDlp(args);
 
   proc.stdout.on('data', d => { output += d.toString(); });
   proc.stderr.on('data', d => { errOutput += d.toString(); });
 
   proc.on('error', (err) => {
     console.error('[API/info] Process error:', err);
-    return res.status(500).json({ error: `Process error: ${err.message}. yt-dlp cmd: ${spawnCmd}, config: ${JSON.stringify(YT_DLP_CONFIG)}` });
+    return res.status(500).json({ error: `Process error: ${err.message}. Config: ${JSON.stringify(YT_DLP_CONFIG)}` });
   });
 
   proc.on('close', code => {
@@ -254,19 +266,9 @@ app.post('/api/download', (req, res) => {
     url
   ];
 
-  console.log(`[Job ${jobId}] Starting: ${YT_DLP_CONFIG.cmd} ${args.join(' ')}`);
+  console.log(`[Job ${jobId}] Starting download with config:`, YT_DLP_CONFIG);
   
-  // Prepare spawn arguments
-  let downloadArgs = args;
-  let downloadCmd = YT_DLP_CONFIG.cmd;
-  let downloadOpts = { shell: YT_DLP_CONFIG.useShell || false };
-  
-  // If using Python module, prepend -m yt_dlp to args
-  if (YT_DLP_CONFIG.args) {
-    downloadArgs = [...YT_DLP_CONFIG.args, ...args];
-  }
-  
-  const proc = spawn(downloadCmd, downloadArgs, downloadOpts);
+  const proc = spawnYtDlp(args);
 
   proc.stdout.on('data', d => {
     const line = d.toString();
