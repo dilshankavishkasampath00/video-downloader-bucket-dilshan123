@@ -2,9 +2,46 @@ const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { execSync } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const ffmpegPath = require('ffmpeg-static');
 const AWS = require('aws-sdk');
+
+// Find yt-dlp executable
+function findYtDlp() {
+  const commonPaths = [
+    path.join(__dirname, '..', '.venv', 'Scripts', 'yt-dlp.exe'),
+    path.join(__dirname, '..', '.venv', 'Scripts', 'yt-dlp'),
+    '/usr/local/bin/yt-dlp',
+    '/usr/bin/yt-dlp',
+    'yt-dlp'
+  ];
+  
+  for (const pathToCheck of commonPaths) {
+    try {
+      execSync(`"${pathToCheck}" --version`, { stdio: 'ignore' });
+      console.log(`[Init] Found yt-dlp at: ${pathToCheck}`);
+      return pathToCheck;
+    } catch (e) {
+      // Path not found, try next
+    }
+  }
+  
+  // Try running as Python module
+  try {
+    execSync('python -m yt_dlp --version', { stdio: 'ignore' });
+    console.log('[Init] Found yt-dlp via Python module: python -m yt_dlp');
+    return 'python -m yt_dlp';
+  } catch (e) {
+    // Python module not available
+  }
+  
+  // If we get here, just return 'yt-dlp' and hope it's in PATH
+  console.warn('[Init] yt-dlp not found in common paths, using: yt-dlp');
+  return 'yt-dlp';
+}
+
+const YT_DLP_PATH = findYtDlp();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -113,14 +150,14 @@ app.post('/api/info', (req, res) => {
 
   let output = '';
   let errOutput = '';
-  const proc = spawn('yt-dlp', args);
+  const proc = spawn(YT_DLP_PATH, args);
 
   proc.stdout.on('data', d => { output += d.toString(); });
   proc.stderr.on('data', d => { errOutput += d.toString(); });
 
   proc.on('error', (err) => {
     console.error('[API/info] Process error:', err);
-    return res.status(500).json({ error: `Process error: ${err.message}` });
+    return res.status(500).json({ error: `Process error: ${err.message}. yt-dlp path: ${YT_DLP_PATH}` });
   });
 
   proc.on('close', code => {
