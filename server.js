@@ -11,7 +11,15 @@ const AWS = require('aws-sdk');
 function findYtDlp() {
   const isWindows = process.platform === 'win32';
   const pythonCmd = isWindows ? 'python' : 'python3';
-  
+  // Prefer running yt-dlp as a Python module (works well in containers)
+  try {
+    execSync(`${pythonCmd} -m yt_dlp --version`, { stdio: 'ignore' });
+    console.log(`[Init] Found yt-dlp via Python module: ${pythonCmd} -m yt_dlp`);
+    return { type: 'python', pythonCmd: pythonCmd };
+  } catch (e) {
+    // Python module not available, continue to check binaries
+  }
+
   const commonPaths = [
     path.join(__dirname, '..', '.venv', 'Scripts', 'yt-dlp.exe'),
     path.join(__dirname, '..', '.venv', 'Scripts', 'yt-dlp'),
@@ -19,7 +27,7 @@ function findYtDlp() {
     '/usr/bin/yt-dlp',
     'yt-dlp'
   ];
-  
+
   for (const pathToCheck of commonPaths) {
     try {
       execSync(`"${pathToCheck}" --version`, { stdio: 'ignore' });
@@ -29,18 +37,10 @@ function findYtDlp() {
       // Path not found, try next
     }
   }
-  
-  // Try running as Python module (preferred for Docker)
-  try {
-    execSync(`${pythonCmd} -m yt_dlp --version`, { stdio: 'ignore' });
-    console.log(`[Init] Found yt-dlp via Python module: ${pythonCmd} -m yt_dlp`);
-    return { type: 'python', pythonCmd: pythonCmd };
-  } catch (e) {
-    // Python module not available
-  }
-  
-  // Fallback: try with shell (allows PATH resolution)
-  console.warn('[Init] Using yt-dlp with shell mode for PATH resolution');
+
+  // Fallback: shell mode (let the OS resolve PATH) — may still fail if not installed
+  console.warn('[Init] yt-dlp not found. Falling back to shell-mode command `yt-dlp`.');
+  console.warn('[Init] If running on App Runner, ensure you deploy using the provided Dockerfile or install yt-dlp in the environment.');
   return { type: 'shell', cmd: 'yt-dlp' };
 }
 
@@ -170,6 +170,8 @@ app.post('/api/info', (req, res) => {
     '--no-playlist',
     '--ffmpeg-location', ffmpegPath,
     '--no-warnings',
+    '--socket-timeout', '30',
+    '--retries', '3',
     url
   ];
 
@@ -188,9 +190,9 @@ app.post('/api/info', (req, res) => {
         responseSent = true;
         console.error('[API/info] Process timeout - killing process');
         proc.kill('SIGTERM');
-        res.status(500).json({ error: 'yt-dlp request timed out after 30 seconds' });
+        res.status(500).json({ error: 'yt-dlp request timed out after 60 seconds' });
       }
-    }, 30000);
+    }, 60000);
 
     proc.stdout.on('data', d => { 
       output += d.toString();
@@ -222,14 +224,15 @@ app.post('/api/info', (req, res) => {
         console.error('[API/info] yt-dlp error output:', errOutput);
         return res.status(500).json({ 
           error: 'Could not fetch video info. Make sure the URL is public and correct.',
-          details: errOutput.substring(0, 200)
+          details: errOutput.substring(0, 2000),
+          debug: { config: YT_DLP_CONFIG, args }
         });
       }
       
       if (!output) {
         responseSent = true;
-        console.error('[API/info] No output from yt-dlp! Config:', YT_DLP_CONFIG, 'Args:', args);
-        return res.status(500).json({ error: 'No output from yt-dlp. Check server logs.' });
+        console.error('[API/info] No output from yt-dlp! Config:', YT_DLP_CONFIG, 'Args:', args, 'Stderr:', errOutput);
+        return res.status(500).json({ error: 'No output from yt-dlp. Check server logs.', details: errOutput.substring(0, 2000), debug: { config: YT_DLP_CONFIG, args } });
       }
 
       try {

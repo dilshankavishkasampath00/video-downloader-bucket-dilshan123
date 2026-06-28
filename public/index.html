@@ -713,7 +713,11 @@
         body: JSON.stringify({ url })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Unknown error');
+      if (!res.ok) {
+        const errMsg = data.error || 'Unknown error';
+        const details = data.details ? " Details: " + data.details : '';
+        throw new Error(errMsg + details);
+      }
       renderResult(data);
     } catch(e) {
       showError(e.message || 'Could not fetch video info.');
