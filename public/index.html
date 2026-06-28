@@ -697,8 +697,10 @@
   // ── Fetch video info ──
   async function fetchInfo() {
     const url = document.getElementById('urlInput').value.trim();
-    const cookiesFile = document.getElementById('cookiesFile').value.trim();
-    const cookiesSource = document.getElementById('cookieSource').value;
+    const cookiesField = document.getElementById('cookiesFile');
+    const cookiesSourceField = document.getElementById('cookieSource');
+    const cookiesFile = cookiesField ? cookiesField.value.trim() : '';
+    const cookiesSource = cookiesSourceField ? cookiesSourceField.value : '';
     if (!url) { showError('Please paste a media URL first.'); return; }
     if (cookiesFile && !/^[\w\s\.\\/:-]+\.txt$/i.test(cookiesFile)) {
       showError('Please enter a valid cookies.txt path or clear the cookies field.');
@@ -785,8 +787,10 @@
   // ── Start download ──
   async function startDownload() {
     const url = document.getElementById('urlInput').value.trim();
-    const cookiesFile = document.getElementById('cookiesFile').value.trim();
-    const cookiesSource = document.getElementById('cookieSource').value;
+    const cookiesField = document.getElementById('cookiesFile');
+    const cookiesSourceField = document.getElementById('cookieSource');
+    const cookiesFile = cookiesField ? cookiesField.value.trim() : '';
+    const cookiesSource = cookiesSourceField ? cookiesSourceField.value : '';
     const btn = document.getElementById('dlBtn');
     if (!url) { showError('Please paste a media URL first.'); return; }
     if (cookiesFile && !/^[\w\s\.\\/:-]+\.txt$/i.test(cookiesFile)) {
