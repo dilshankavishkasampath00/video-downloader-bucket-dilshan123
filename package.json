@@ -5,12 +5,21 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "npx playwright test",
+    "qa": "npx start-server-and-test start http://localhost:3000 test",
+    "qa:lighthouse": "npx lighthouse http://localhost:3000 --output html --output-path=qa/lighthouse-report.html --only-categories=performance,accessibility,best-practices,seo"
   },
   "dependencies": {
     "express": "^4.18.2",
     "ffmpeg-static": "^5.2.0",
     "uuid": "^9.0.0",
     "aws-sdk": "^2.1400.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "lighthouse": "^10.0.0",
+    "playwright": "^1.40.0",
+    "start-server-and-test": "^1.16.5"
   }
 }
