@@ -278,29 +278,45 @@ app.post('/api/info', (req, res) => {
         const allFormats = (info.formats || []).slice();
         const hasVideo = allFormats.some(f => f.vcodec !== 'none');
 
-        allFormats.sort((a, b) => {
-          const aScore = ((a.height || 0) * 1000) + (a.filesize || 0);
-          const bScore = ((b.height || 0) * 1000) + (b.filesize || 0);
+        const formatGroups = allFormats.map(f => {
+          const hasVideoTrack = f.vcodec !== 'none';
+          const hasAudioTrack = f.acodec !== 'none';
+          let group = 2;
+          if (hasVideoTrack && hasAudioTrack) group = 0;
+          else if (hasVideoTrack) group = 1;
+          return { format: f, hasVideoTrack, hasAudioTrack, group };
+        });
+
+        formatGroups.sort((a, b) => {
+          if (a.group !== b.group) return a.group - b.group;
+          const aScore = ((a.format.height || 0) * 1000) + (a.format.filesize || 0);
+          const bScore = ((b.format.height || 0) * 1000) + (b.format.filesize || 0);
           return bScore - aScore;
         });
 
         const seen = new Set();
-        allFormats.forEach(f => {
-          const label = f.height
-            ? `${f.height}p`
-            : f.vcodec !== 'none'
-              ? f.format_note || f.format_id
-              : f.acodec !== 'none'
-                ? `Audio ${f.ext?.toUpperCase() || 'FILE'}`
-                : `${(f.ext || 'file').toUpperCase()}`;
+        formatGroups.forEach(({ format: f, hasVideoTrack, hasAudioTrack }) => {
+          let label;
+          if (hasVideoTrack && hasAudioTrack) {
+            label = f.height ? `${f.height}p` : f.format_note || f.format_id;
+          } else if (hasVideoTrack) {
+            label = f.height ? `${f.height}p (video only)` : `${f.format_note || f.format_id} (video only)`;
+          } else if (hasAudioTrack) {
+            label = `Audio ${f.ext?.toUpperCase() || 'FILE'}`;
+          } else {
+            label = `${(f.ext || 'file').toUpperCase()}`;
+          }
+
           if (!seen.has(label)) {
             seen.add(label);
-            formats.push({ id: f.format_id, label, ext: f.ext || 'bin', note: f.format_note || '' });
+            const note = f.format_note || (hasVideoTrack && !hasAudioTrack ? 'Video only' : !hasVideoTrack && hasAudioTrack ? 'Audio only' : '');
+            formats.push({ id: f.format_id, label, ext: f.ext || 'bin', note });
           }
         });
 
-        const bestFormatId = hasVideo ? 'bestvideo+bestaudio/best' : 'best';
-        formats.unshift({ id: bestFormatId, label: 'Best Quality (Auto)', ext: 'mp4', note: 'Highest available media' });
+        const bestCompatibleFormatId = 'bestvideo[ext=mp4][vcodec=h264]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
+        const bestFormatId = hasVideo ? bestCompatibleFormatId : 'best';
+        formats.unshift({ id: bestFormatId, label: 'Best Compatible MP4', ext: 'mp4', note: 'Highest playable quality with audio' });
 
         res.json({
           title: info.title || 'Media',
@@ -355,7 +371,8 @@ app.post('/api/download', (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
-  if (format.includes('+') || format.startsWith('bestvideo') || format.includes('bestaudio')) {
+  const shouldRecode = format.includes('+') || format.startsWith('bestvideo') || format.includes('bestaudio') || format.includes('bestvideo[ext=mp4]') || format === 'best';
+  if (shouldRecode) {
     args.push('--merge-output-format', 'mp4');
   }
 
@@ -405,39 +422,49 @@ app.post('/api/download', (req, res) => {
       }
     });
 
-    proc.on('close', code => {
+    proc.on('close', async (code) => {
       clearTimeout(timeout);
       if (!jobs[jobId]) return; // Job was deleted
       
       if (code === 0) {
-        // Find the output file
+        // Find the output file(s)
         try {
-          const files = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.startsWith(jobId));
+          const files = fs.readdirSync(DOWNLOADS_DIR)
+            .filter(f => f.startsWith(jobId) && !f.endsWith('-converted.mp4'));
+
           if (files.length > 0) {
-            const fileName = files[0];
-            const filePath = path.join(DOWNLOADS_DIR, fileName);
-            jobs[jobId].filename = fileName;
+            let fileName = files[0];
+            let filePath = path.join(DOWNLOADS_DIR, fileName);
+            const convertedFilePath = path.join(DOWNLOADS_DIR, `${jobId}-converted.mp4`);
+
+            console.log(`[${jobId}] Download finished, starting conversion if needed: ${fileName}`);
+            try {
+              await transcodeFileToMp4(filePath, convertedFilePath);
+              fs.unlinkSync(filePath);
+              fs.renameSync(convertedFilePath, filePath);
+              console.log(`[${jobId}] Transcoded to H.264/AAC: ${path.basename(filePath)}`);
+            } catch (convertErr) {
+              console.error(`[${jobId}] Transcode failed, keeping original file:`, convertErr.message);
+            }
+
+            jobs[jobId].filename = path.basename(filePath);
             jobs[jobId].status = 'done';
             jobs[jobId].progress = 100;
-            jobs[jobId].downloadUrl = `/downloads/${fileName}`;
+            jobs[jobId].downloadUrl = `/downloads/${path.basename(filePath)}`;
             
-            console.log(`[${jobId}] Done: ${fileName}`);
-
-            // Upload to S3 if configured
-            if (S3_BUCKET) {
-              uploadToS3(filePath, fileName)
-                .then(s3Url => {
-                  if (s3Url && jobs[jobId]) {
-                    jobs[jobId].s3Url = s3Url;
-                    jobs[jobId].downloadUrl = s3Url; // Prefer S3 URL for persistent access
-                    console.log(`[${jobId}] S3 URL: ${s3Url}`);
-                  }
-                })
-                .catch(err => {
-                  console.error(`[${jobId}] S3 upload error:`, err);
-                  // Fallback to local download still available
-                });
-            }
+            console.log(`[${jobId}] Done: ${path.basename(filePath)}`);
+            uploadToS3(filePath, path.basename(filePath))
+              .then(s3Url => {
+                if (s3Url && jobs[jobId]) {
+                  jobs[jobId].s3Url = s3Url;
+                  jobs[jobId].downloadUrl = s3Url; // Prefer S3 URL for persistent access
+                  console.log(`[${jobId}] S3 URL: ${s3Url}`);
+                }
+              })
+              .catch(err => {
+                console.error(`[${jobId}] S3 upload error:`, err);
+                // Fallback to local download still available
+              });
           } else {
             jobs[jobId].status = 'error';
             jobs[jobId].error = 'File not found after download.';
@@ -470,6 +497,41 @@ app.get('/api/progress/:jobId', (req, res) => {
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json(job);
 });
+
+async function transcodeFileToMp4(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const ffmpegArgs = [
+      '-y',
+      '-i', inputPath,
+      '-c:v', 'libx264',
+      '-crf', '23',
+      '-preset', 'medium',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-movflags', '+faststart',
+      outputPath
+    ];
+
+    const ffmpeg = spawn(ffmpegPath, ffmpegArgs, { shell: false });
+    let stderr = '';
+
+    ffmpeg.stderr.on('data', data => {
+      stderr += data.toString();
+    });
+
+    ffmpeg.on('close', code => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`FFmpeg failed with code ${code}: ${stderr}`));
+      }
+    });
+
+    ffmpeg.on('error', err => {
+      reject(err);
+    });
+  });
+}
 
 // ───────────────────────────────────────────────
 // Cleanup old files older than 30 minutes

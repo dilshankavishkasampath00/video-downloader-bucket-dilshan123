@@ -1,0 +1,13 @@
+services:
+  - type: web_service
+    name: video-downloader
+    env: docker
+    plan: free
+    branch: main
+    dockerfilePath: Dockerfile
+    buildCommand: ""
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "3000"

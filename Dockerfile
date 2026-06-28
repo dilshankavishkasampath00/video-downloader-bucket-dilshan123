@@ -1,38 +1,37 @@
-FROM node:18-alpine
+FROM node:18-bullseye-slim
 
-# Install system dependencies
-RUN apk add --no-cache \
+# Install required system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
-    py3-pip \
+    python3-pip \
     ffmpeg \
     curl \
-    ca-certificates
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
-# Install and verify yt-dlp
-RUN pip3 install --upgrade pip && \
-    pip3 install yt-dlp && \
+# Install yt-dlp via pip
+RUN python3 -m pip install --no-cache-dir yt-dlp && \
     echo "Testing yt-dlp installation..." && \
-    python3 -m yt_dlp --version && \
-    echo "yt-dlp installation verified!"
+    python3 -m yt_dlp --version
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files and install dependencies
 COPY package*.json ./
 RUN npm install --production
 
-# Copy app code
+# Copy app source code
 COPY . .
 
-# Create downloads directory with write permissions
+# Ensure downloads directory exists and is writable
 RUN mkdir -p downloads && chmod 777 downloads
 
-# Expose port
+# Expose the application port
 EXPOSE 3000
 
-# Health check using local endpoint
+# Health check endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+    CMD curl -f http://localhost:3000/health || exit 1
 
-# Start app
+# Start the server
 CMD ["npm", "start"]
