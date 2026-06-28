@@ -68,6 +68,33 @@ function spawnYtDlp(args) {
   return spawn(cmd, spawnArgs, opts);
 }
 
+function isValidCookiesFilePath(value) {
+  return typeof value === 'string' && value.trim().length > 0 && /^[\w\s\.\\/:-]+\.txt$/i.test(value.trim());
+}
+
+function buildCookieArgs(body) {
+  const cookieArgs = [];
+  if (!body) return cookieArgs;
+
+  const cookiesFile = typeof body.cookiesFile === 'string' ? body.cookiesFile.trim() : '';
+  const cookiesSource = typeof body.cookiesSource === 'string' ? body.cookiesSource.trim() : '';
+  const allowedSources = new Set(['chrome', 'firefox', 'edge', 'brave', 'chromium', 'opera']);
+
+  if (cookiesFile) {
+    if (!isValidCookiesFilePath(cookiesFile)) {
+      throw new Error('Invalid cookies file path. Use a local cookies.txt file path only.');
+    }
+    cookieArgs.push('--cookies', cookiesFile);
+  } else if (cookiesSource) {
+    if (!allowedSources.has(cookiesSource)) {
+      throw new Error('Invalid cookies source. Supported values: chrome, firefox, edge, brave, chromium, opera.');
+    }
+    cookieArgs.push('--cookies-from-browser', cookiesSource);
+  }
+
+  return cookieArgs;
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -165,15 +192,21 @@ app.post('/api/info', (req, res) => {
 
   console.log(`[API/info] Fetching info for URL: ${url}`);
 
-  const args = [
-    '--dump-json',
-    '--no-playlist',
-    '--ffmpeg-location', ffmpegPath,
-    '--no-warnings',
-    '--socket-timeout', '30',
-    '--retries', '3',
-    url
-  ];
+  let args;
+  try {
+    args = [
+      ...buildCookieArgs(req.body),
+      '--dump-json',
+      '--no-playlist',
+      '--ffmpeg-location', ffmpegPath,
+      '--no-warnings',
+      '--socket-timeout', '30',
+      '--retries', '3',
+      url
+    ];
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   let output = '';
   let errOutput = '';
@@ -225,6 +258,7 @@ app.post('/api/info', (req, res) => {
         return res.status(500).json({ 
           error: 'Could not fetch video info. Make sure the URL is public and correct.',
           details: errOutput.substring(0, 2000),
+          help: 'If this is a login-protected Instagram post, select a browser cookie source or supply a cookies file.',
           debug: { config: YT_DLP_CONFIG, args }
         });
       }
@@ -241,32 +275,41 @@ app.post('/api/info', (req, res) => {
 
         // Build clean format list
         const formats = [];
+        const allFormats = (info.formats || []).slice();
+        const hasVideo = allFormats.some(f => f.vcodec !== 'none');
 
-        // Best combined formats (video+audio already merged)
-        const combined = (info.formats || [])
-          .filter(f => f.vcodec !== 'none' && f.acodec !== 'none' && f.ext === 'mp4')
-        .sort((a, b) => (b.height || 0) - (a.height || 0));
+        allFormats.sort((a, b) => {
+          const aScore = ((a.height || 0) * 1000) + (a.filesize || 0);
+          const bScore = ((b.height || 0) * 1000) + (b.filesize || 0);
+          return bScore - aScore;
+        });
 
-      const seen = new Set();
-      combined.forEach(f => {
-        const label = f.height ? `${f.height}p` : f.format_note || f.format_id;
-        if (!seen.has(label)) {
-          seen.add(label);
-          formats.push({ id: f.format_id, label, ext: f.ext || 'mp4', note: f.format_note || '' });
-        }
-      });
+        const seen = new Set();
+        allFormats.forEach(f => {
+          const label = f.height
+            ? `${f.height}p`
+            : f.vcodec !== 'none'
+              ? f.format_note || f.format_id
+              : f.acodec !== 'none'
+                ? `Audio ${f.ext?.toUpperCase() || 'FILE'}`
+                : `${(f.ext || 'file').toUpperCase()}`;
+          if (!seen.has(label)) {
+            seen.add(label);
+            formats.push({ id: f.format_id, label, ext: f.ext || 'bin', note: f.format_note || '' });
+          }
+        });
 
-      // Add best-quality option (yt-dlp picks best + merges automatically)
-      formats.unshift({ id: 'bestvideo+bestaudio/best', label: 'Best Quality (Auto)', ext: 'mp4', note: 'Highest available' });
+        const bestFormatId = hasVideo ? 'bestvideo+bestaudio/best' : 'best';
+        formats.unshift({ id: bestFormatId, label: 'Best Quality (Auto)', ext: 'mp4', note: 'Highest available media' });
 
-      res.json({
-        title: info.title || 'Video',
-        thumbnail: info.thumbnail || null,
-        duration: info.duration || 0,
-        uploader: info.uploader || info.channel || '',
-        platform: info.extractor_key || '',
-        formats: formats.slice(0, 8)
-      });
+        res.json({
+          title: info.title || 'Media',
+          thumbnail: info.thumbnail || null,
+          duration: info.duration || 0,
+          uploader: info.uploader || info.channel || '',
+          platform: info.extractor_key || '',
+          formats: formats.slice(0, 8)
+        });
       } catch (e) {
         if (!responseSent) {
           responseSent = true;
@@ -296,20 +339,27 @@ app.post('/api/download', (req, res) => {
 
   jobs[jobId] = { status: 'running', progress: 0, filename: null, error: null };
 
-  const format = formatId && formatId !== 'bestvideo+bestaudio/best'
-    ? formatId
-    : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
+  const format = formatId || 'best';
 
-  const args = [
-    '-f', format,
-    '--ffmpeg-location', ffmpegPath,
-    '--merge-output-format', 'mp4',
-    '--no-playlist',
-    '--no-warnings',
-    '--newline',
-    '-o', outputTemplate,
-    url
-  ];
+  let args;
+  try {
+    args = [
+      ...buildCookieArgs(req.body),
+      '-f', format,
+      '--ffmpeg-location', ffmpegPath,
+      '--no-playlist',
+      '--no-warnings',
+      '--newline'
+    ];
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  if (format.includes('+') || format.startsWith('bestvideo') || format.includes('bestaudio')) {
+    args.push('--merge-output-format', 'mp4');
+  }
+
+  args.push('-o', outputTemplate, url);
 
   console.log(`[Job ${jobId}] Starting download with config:`, YT_DLP_CONFIG);
   

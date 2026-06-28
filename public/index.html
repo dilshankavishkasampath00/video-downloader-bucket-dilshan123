@@ -557,8 +557,8 @@
 
   <!-- Hero -->
   <section class="hero">
-    <h1>Download Any Video<br><span>In Full Quality</span></h1>
-    <p class="hero-sub">Paste a URL from Facebook, Instagram, TikTok, Twitter, YouTube and more. Get it saved to your PC instantly.</p>
+    <h1>Download Any Media<br><span>Videos, images, audio and more</span></h1>
+    <p class="hero-sub">Paste a URL from Facebook, Instagram, TikTok, Twitter/X, YouTube, Threads and more. Save media to your PC instantly.</p>
 
     <div class="platforms">
       <div class="platform-badge">📘 Facebook</div>
@@ -574,8 +574,19 @@
   <div class="input-card">
     <div class="input-wrap">
       <button class="paste-btn" id="pasteBtn" onclick="pasteUrl()">📋 Paste</button>
-      <input type="text" id="urlInput" placeholder="Paste video URL here…" autocomplete="off" autocorrect="off" spellcheck="false">
-      <button class="get-btn" id="getBtn" onclick="fetchInfo()">Get Video</button>
+      <input type="text" id="urlInput" placeholder="Paste media URL here…" autocomplete="off" autocorrect="off" spellcheck="false">
+      <button class="get-btn" id="getBtn" onclick="fetchInfo()">Get Media</button>
+    </div>
+    <div class="cookie-wrap">
+      <label for="cookieSource">Instagram cookie source (optional):</label>
+      <select id="cookieSource">
+        <option value="">None</option>
+        <option value="chrome">Chrome</option>
+        <option value="firefox">firefox</option>
+        <option value="edge">edge</option>
+      </select>
+      <input type="text" id="cookiesFile" placeholder="Or enter a cookies file path" autocomplete="off" autocorrect="off" spellcheck="false">
+      <div class="cookie-hint">Use cookies if the Instagram post requires login. Preferred: Browser source, or a cookies.txt file.</div>
     </div>
   </div>
 
@@ -628,8 +639,8 @@
     <div id="doneSection">
       <div class="done-icon">🎉</div>
       <div class="done-title">Download Complete!</div>
-      <div class="done-sub">Your video is ready. Click below to save it.</div>
-      <a class="save-btn" id="saveLink" href="#" download>⬇ Save Video to PC</a>
+      <div class="done-sub">Your media is ready. Click below to save it.</div>
+      <a class="save-btn" id="saveLink" href="#" download>⬇ Save Media to PC</a>
       <button class="new-btn" onclick="resetAll()">Download another video</button>
     </div>
   </div>
@@ -654,7 +665,7 @@
   </div>
 
   <footer>
-    VidSnap — Local video downloader · Running on localhost:3000 · For personal use only
+    VidSnap — Local media downloader · Running on localhost:3000 · For personal use only
   </footer>
 
 <script>
@@ -695,12 +706,18 @@
   // ── Fetch video info ──
   async function fetchInfo() {
     const url = document.getElementById('urlInput').value.trim();
-    if (!url) { showError('Please paste a video URL first.'); return; }
-
-    hideError();
-    document.getElementById('resultSection').style.display = 'none';
-    document.getElementById('progressSection').style.display = 'none';
-    document.getElementById('doneSection').style.display = 'none';
+    const cookiesFile = document.getElementById('cookiesFile').value.trim();
+    const cookiesSource = document.getElementById('cookieSource').value;
+    if (!url) { showError('Please paste a media URL first.'); return; }
+    if (cookiesFile && !/^[\w\s\.\\/:-]+\.txt$/i.test(cookiesFile)) {
+      showError('Please enter a valid cookies.txt path or clear the cookies field.');
+      return;
+    }
+    const allowedSources = ['chrome', 'firefox', 'edge', 'brave', 'chromium', 'opera'];
+    if (cookiesSource && !allowedSources.includes(cookiesSource)) {
+      showError('Please select a valid browser cookie source.');
+      return;
+    }
 
     const btn = document.getElementById('getBtn');
     btn.disabled = true;
@@ -710,20 +727,21 @@
       const res = await fetch('/api/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({ url, cookiesFile, cookiesSource })
       });
       const data = await res.json();
       if (!res.ok) {
         const errMsg = data.error || 'Unknown error';
         const details = data.details ? " Details: " + data.details : '';
-        throw new Error(errMsg + details);
+        const help = data.help ? " Help: " + data.help : '';
+        throw new Error(errMsg + details + help);
       }
       renderResult(data);
     } catch(e) {
-      showError(e.message || 'Could not fetch video info.');
+      showError(e.message || 'Could not fetch media info.');
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Get Video';
+      btn.textContent = 'Get Media';
     }
   }
 
@@ -776,7 +794,19 @@
   // ── Start download ──
   async function startDownload() {
     const url = document.getElementById('urlInput').value.trim();
+    const cookiesFile = document.getElementById('cookiesFile').value.trim();
+    const cookiesSource = document.getElementById('cookieSource').value;
     const btn = document.getElementById('dlBtn');
+    if (!url) { showError('Please paste a media URL first.'); return; }
+    if (cookiesFile && !/^[\w\s\.\\/:-]+\.txt$/i.test(cookiesFile)) {
+      showError('Please enter a valid cookies.txt path or clear the cookies field.');
+      return;
+    }
+    const allowedSources = ['chrome', 'firefox', 'edge', 'brave', 'chromium', 'opera'];
+    if (cookiesSource && !allowedSources.includes(cookiesSource)) {
+      showError('Please select a valid browser cookie source.');
+      return;
+    }
     btn.disabled = true;
     btn.textContent = 'Starting…';
 
@@ -790,7 +820,7 @@
       const res = await fetch('/api/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, formatId: selectedFormatId })
+        body: JSON.stringify({ url, formatId: selectedFormatId, cookiesFile, cookiesSource })
       });
       const { jobId, error } = await res.json();
       if (error) throw new Error(error);
@@ -816,7 +846,7 @@
           const pct = Math.min(job.progress || 0, 99);
           document.getElementById('progressBar').style.width = pct + '%';
           document.getElementById('progressPct').textContent = pct.toFixed(0) + '%';
-          if (pct > 50) document.getElementById('statusText').textContent = 'Merging audio & video with FFmpeg…';
+          if (pct > 50) document.getElementById('statusText').textContent = 'Processing media with FFmpeg…';
         }
 
         if (job.status === 'done') {
@@ -826,11 +856,11 @@
           document.getElementById('progressSection').style.display = 'none';
           document.getElementById('doneSection').style.display = 'block';
           document.getElementById('saveLink').href = job.downloadUrl;
-          document.getElementById('saveLink').download = job.filename || 'video.mp4';
+          document.getElementById('saveLink').download = job.filename || 'media.bin';
           // Auto-trigger download
           const a = document.createElement('a');
           a.href = job.downloadUrl;
-          a.download = job.filename || 'video.mp4';
+          a.download = job.filename || 'media.bin';
           a.click();
         }
 
